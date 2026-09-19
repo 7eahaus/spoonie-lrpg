@@ -2,7 +2,7 @@
 	"id": "spoonie-lrpg",
 	"name": "Spoonie LRPG",
 	"version": "1.0.0",
-	"minAppVersion": "1.0.0",
+	"minAppVersion": "1.7.2",
 	"description": "A life RPG system for the chronically ill as an Obsidian plugin.",
 	"author": "TeaHaus Shindan",
 	"authorUrl": "https://7eahaus.com",
