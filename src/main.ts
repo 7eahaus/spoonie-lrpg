@@ -13,11 +13,10 @@ import {
 } from 'obsidian';
 import {
 	ItemType,
-	MyPluginSettings,
 	Priority,
 	RecurrenceMode,
 	RecurrenceRule,
-	SampleSettingTab,
+	SpoonieLrpgSettings,
 	TrackableItem,
 	DailyRecord,
 	DailyActivity,
@@ -26,6 +25,7 @@ import {
 	getDefaultMoodCatalog,
 	getDefaultPainAreasCatalog,
 	migrateSettings,
+	SpoonieLrpgSettingTab,
 } from './settings';
 
 interface ItemDraft {
@@ -159,7 +159,7 @@ const SPOON_ICON_SVG = `
 </svg>`;
 
 export default class SpoonieLrpgPlugin extends Plugin {
-	settings!: MyPluginSettings;
+	settings!: SpoonieLrpgSettings;
 	private statusBarItemEl?: HTMLElement;
 	private dueDebugModeEnabled = false;
 
@@ -430,7 +430,7 @@ export default class SpoonieLrpgPlugin extends Plugin {
 			this.renderJournalBlock(source, el);
 		});
 
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new SpoonieLrpgSettingTab(this.app, this));
 	}
 
 	onunload() {
@@ -440,7 +440,7 @@ export default class SpoonieLrpgPlugin extends Plugin {
 	}
 
 	async loadSettings() {
-		const rawData = await this.loadData();
+		const rawData: unknown = await this.loadData();
 		this.settings = migrateSettings(rawData);
 		await this.saveSettings();
 	}
@@ -1741,7 +1741,7 @@ export default class SpoonieLrpgPlugin extends Plugin {
 	private async openDashboardInMainView(): Promise<void> {
 		const leaf = this.app.workspace.getLeaf(true);
 		await leaf.setViewState({ type: DASHBOARD_VIEW_TYPE, active: true });
-		this.app.workspace.revealLeaf(leaf);
+		await this.app.workspace.revealLeaf(leaf);
 	}
 
 	private async openDashboardInSidebar(): Promise<void> {
@@ -1754,7 +1754,7 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		}
 
 		await leaf.setViewState({ type: DASHBOARD_VIEW_TYPE, active: true });
-		this.app.workspace.revealLeaf(leaf);
+		await this.app.workspace.revealLeaf(leaf);
 	}
 
 	private showTodayJournalSummary(): void {
@@ -1888,7 +1888,11 @@ export default class SpoonieLrpgPlugin extends Plugin {
 
 		const svgMarkup = this.buildChartSvg(query, data);
 		const frame = card.createDiv({ cls: 'spoonie-chart-frame' });
-		frame.innerHTML = svgMarkup;
+		const svgDocument = new DOMParser().parseFromString(svgMarkup, 'image/svg+xml');
+		const svgElement = svgDocument.documentElement;
+		if (svgElement instanceof SVGSVGElement) {
+			frame.appendChild(svgElement.cloneNode(true));
+		}
 		this.attachChartPointTooltips(frame);
 
 		const actions = card.createDiv({ cls: 'spoonie-chart-actions' });
@@ -1897,13 +1901,15 @@ export default class SpoonieLrpgPlugin extends Plugin {
 			text: 'Export PNG Attachment',
 		});
 		exportButton.type = 'button';
-		exportButton.addEventListener('click', async () => {
-			exportButton.disabled = true;
-			try {
-				await this.exportChartAsPngAttachment(query, frame, sourcePath);
-			} finally {
-				exportButton.disabled = false;
-			}
+		exportButton.addEventListener('click', () => {
+			void (async () => {
+				exportButton.disabled = true;
+				try {
+					await this.exportChartAsPngAttachment(query, frame, sourcePath);
+				} finally {
+					exportButton.disabled = false;
+				}
+			})();
 		});
 
 		const legend = card.createDiv({ cls: 'spoonie-chart-legend' });
@@ -1948,7 +1954,7 @@ export default class SpoonieLrpgPlugin extends Plugin {
 			const entryEl = list.createDiv({ cls: 'spoonie-journal-block-entry' });
 			const header = entryEl.createDiv({ cls: 'spoonie-journal-block-header' });
 			header.createEl('strong', { text: entry.date });
-			header.createEl('span', {
+			header.createSpan({
 				cls: 'spoonie-journal-block-time',
 				text: this.getLocalTimeFromTimestamp(entry.timestamp),
 			});
@@ -1988,10 +1994,9 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		}
 
 		const tooltip = frame.createDiv({ cls: 'spoonie-chart-tooltip' });
-		tooltip.style.display = 'none';
 
 		const hideTooltip = (): void => {
-			tooltip.style.display = 'none';
+			tooltip.removeClass('is-visible');
 		};
 
 		points.forEach((point) => {
@@ -2000,13 +2005,15 @@ export default class SpoonieLrpgPlugin extends Plugin {
 				const date = point.dataset.date ?? '';
 				const value = point.dataset.value ?? '';
 				tooltip.textContent = `${metric}: ${value} (${date})`;
-				tooltip.style.display = 'block';
+				tooltip.addClass('is-visible');
 
 				const frameRect = frame.getBoundingClientRect();
 				const x = event.clientX - frameRect.left + 10;
 				const y = event.clientY - frameRect.top - 10;
-				tooltip.style.left = `${x}px`;
-				tooltip.style.top = `${y}px`;
+				tooltip.setCssProps({
+					'--spoonie-tooltip-left': `${x}px`,
+					'--spoonie-tooltip-top': `${y}px`,
+				});
 			};
 
 			point.addEventListener('mouseenter', showTooltip);
@@ -2074,7 +2081,7 @@ export default class SpoonieLrpgPlugin extends Plugin {
 	): Promise<ArrayBuffer> {
 		const width = Math.max(1, Math.round(image.width * scale));
 		const height = Math.max(1, Math.round(image.height * scale));
-		const canvas = document.createElement('canvas');
+		const canvas = createEl('canvas');
 		canvas.width = width;
 		canvas.height = height;
 		const context = canvas.getContext('2d');
@@ -2086,12 +2093,12 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		context.drawImage(image, 0, 0);
 
 		return new Promise((resolve, reject) => {
-			canvas.toBlob(async (blob) => {
+			canvas.toBlob((blob) => {
 				if (!blob) {
 					reject(new Error('Unable to encode PNG chart image.'));
 					return;
 				}
-				resolve(await blob.arrayBuffer());
+				void blob.arrayBuffer().then(resolve, reject);
 			}, 'image/png');
 		});
 	}
@@ -3556,6 +3563,7 @@ class DashboardModal extends Modal {
 		}
 
 		this.modalEl.addClass('spoonie-dashboard-modal');
+		this.modalEl.addClass('spoonie-keyboard-aware-modal');
 
 		const updatePosition = (): void => {
 			const keyboardHeight = Math.max(
@@ -3565,14 +3573,10 @@ class DashboardModal extends Modal {
 			const bottomOffset = 8 + keyboardHeight;
 			const maxHeight = Math.max(280, window.innerHeight - bottomOffset - 8);
 
-			this.modalEl.style.position = 'fixed';
-			this.modalEl.style.left = '8px';
-			this.modalEl.style.right = '8px';
-			this.modalEl.style.top = 'auto';
-			this.modalEl.style.bottom = `${bottomOffset}px`;
-			this.modalEl.style.margin = '0 auto';
-			this.modalEl.style.maxHeight = `${maxHeight}px`;
-			this.modalEl.style.overflow = 'auto';
+			this.modalEl.setCssProps({
+				'--spoonie-modal-bottom': `${bottomOffset}px`,
+				'--spoonie-modal-max-height': `${maxHeight}px`,
+			});
 		};
 
 		updatePosition();
@@ -3583,14 +3587,11 @@ class DashboardModal extends Modal {
 			viewport.removeEventListener('resize', updatePosition);
 			viewport.removeEventListener('scroll', updatePosition);
 			this.modalEl.removeClass('spoonie-dashboard-modal');
-			this.modalEl.style.removeProperty('position');
-			this.modalEl.style.removeProperty('left');
-			this.modalEl.style.removeProperty('right');
-			this.modalEl.style.removeProperty('top');
-			this.modalEl.style.removeProperty('bottom');
-			this.modalEl.style.removeProperty('margin');
-			this.modalEl.style.removeProperty('max-height');
-			this.modalEl.style.removeProperty('overflow');
+			this.modalEl.removeClass('spoonie-keyboard-aware-modal');
+			this.modalEl.setCssProps({
+				'--spoonie-modal-bottom': '',
+				'--spoonie-modal-max-height': '',
+			});
 		};
 	}
 }
@@ -3957,6 +3958,7 @@ class JournalEntryFormModal extends Modal {
 		}
 
 		this.modalEl.addClass('spoonie-journal-modal');
+		this.modalEl.addClass('spoonie-keyboard-aware-modal');
 
 		const updatePosition = (): void => {
 			const keyboardHeight = Math.max(
@@ -3966,14 +3968,10 @@ class JournalEntryFormModal extends Modal {
 			const bottomOffset = 8 + keyboardHeight;
 			const maxHeight = Math.max(320, window.innerHeight - bottomOffset - 8);
 
-			this.modalEl.style.position = 'fixed';
-			this.modalEl.style.left = '8px';
-			this.modalEl.style.right = '8px';
-			this.modalEl.style.top = 'auto';
-			this.modalEl.style.bottom = `${bottomOffset}px`;
-			this.modalEl.style.margin = '0 auto';
-			this.modalEl.style.maxHeight = `${maxHeight}px`;
-			this.modalEl.style.overflow = 'auto';
+			this.modalEl.setCssProps({
+				'--spoonie-modal-bottom': `${bottomOffset}px`,
+				'--spoonie-modal-max-height': `${maxHeight}px`,
+			});
 		};
 
 		const handleFocusIn = (event: FocusEvent): void => {
@@ -3996,14 +3994,11 @@ class JournalEntryFormModal extends Modal {
 			viewport.removeEventListener('scroll', updatePosition);
 			this.modalEl.removeEventListener('focusin', handleFocusIn);
 			this.modalEl.removeClass('spoonie-journal-modal');
-			this.modalEl.style.removeProperty('position');
-			this.modalEl.style.removeProperty('left');
-			this.modalEl.style.removeProperty('right');
-			this.modalEl.style.removeProperty('top');
-			this.modalEl.style.removeProperty('bottom');
-			this.modalEl.style.removeProperty('margin');
-			this.modalEl.style.removeProperty('max-height');
-			this.modalEl.style.removeProperty('overflow');
+			this.modalEl.removeClass('spoonie-keyboard-aware-modal');
+			this.modalEl.setCssProps({
+				'--spoonie-modal-bottom': '',
+				'--spoonie-modal-max-height': '',
+			});
 		};
 	}
 }

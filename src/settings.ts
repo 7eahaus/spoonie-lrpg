@@ -1,5 +1,5 @@
 import { App, PluginSettingTab, Setting } from 'obsidian';
-import MyPlugin from './main';
+import SpoonieLrpgPlugin from './main';
 
 export const CURRENT_SCHEMA_VERSION = 5;
 
@@ -120,7 +120,7 @@ export interface SystemConfig {
 	priorityMultipliers: Record<Priority, number>;
 }
 
-export interface MyPluginSettings {
+export interface SpoonieLrpgSettings {
 	schemaVersion: number;
 	profile: UserProfile;
 	config: SystemConfig;
@@ -205,9 +205,9 @@ export function getDefaultPainAreasCatalog(): PainAreaOption[] {
 	return DEFAULT_PAIN_AREAS_CATALOG.map((painArea) => ({ ...painArea }));
 }
 
-export const DEFAULT_SETTINGS: MyPluginSettings = createDefaultSettings();
+export const DEFAULT_SETTINGS: SpoonieLrpgSettings = createDefaultSettings();
 
-export function createDefaultSettings(): MyPluginSettings {
+export function createDefaultSettings(): SpoonieLrpgSettings {
 	return {
 		schemaVersion: CURRENT_SCHEMA_VERSION,
 		profile: {
@@ -470,7 +470,7 @@ function normalizePainAreaOption(value: unknown): PainAreaOption | null {
 	};
 }
 
-export function migrateSettings(rawData: unknown): MyPluginSettings {
+export function migrateSettings(rawData: unknown): SpoonieLrpgSettings {
 	const defaults = createDefaultSettings();
 	if (!isRecord(rawData)) {
 		return defaults;
@@ -652,10 +652,10 @@ export function migrateSettings(rawData: unknown): MyPluginSettings {
 	};
 }
 
-export class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+export class SpoonieLrpgSettingTab extends PluginSettingTab {
+	plugin: SpoonieLrpgPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: SpoonieLrpgPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}

@@ -349,6 +349,13 @@ If your plugin does not need CSS, delete this file.
 	white-space: nowrap;
 	box-shadow: 0 4px 14px rgba(0, 0, 0, 0.18);
 	transform: translateY(-100%);
+	display: none;
+	left: var(--spoonie-tooltip-left, 0);
+	top: var(--spoonie-tooltip-top, 0);
+}
+
+.spoonie-chart-tooltip.is-visible {
+	display: block;
 }
 
 .spoonie-chart-empty {
@@ -409,6 +416,17 @@ If your plugin does not need CSS, delete this file.
 	max-height: inherit;
 	overflow-y: auto;
 	padding-bottom: calc(env(safe-area-inset-bottom) + 84px);
+}
+
+.spoonie-keyboard-aware-modal {
+	position: fixed;
+	left: 8px;
+	right: 8px;
+	top: auto;
+	bottom: var(--spoonie-modal-bottom, 8px);
+	margin: 0 auto;
+	max-height: var(--spoonie-modal-max-height, calc(100dvh - 16px));
+	overflow: auto;
 }
 
 @media (max-width: 900px) {
