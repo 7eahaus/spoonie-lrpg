@@ -109,6 +109,7 @@ const ITEM_TYPE_LABELS: Record<ItemType, string> = {
 };
 
 const RECURRENCE_MODE_LABELS: Record<RecurrenceMode, string> = {
+	none: 'No recurrence',
 	always: 'Any day',
 	daily: 'Every day',
 	weekly: 'Weekly',
@@ -122,6 +123,8 @@ const CHART_RANGE_OPTIONS = ['7d', '14d', '30d', '90d', '180d', 'all'];
 function formatRecurrenceSummary(rule?: RecurrenceRule): string {
 	const recurrence = rule ?? { mode: 'always' as RecurrenceMode };
 	switch (recurrence.mode) {
+		case 'none':
+			return RECURRENCE_MODE_LABELS.none;
 		case 'always':
 			return RECURRENCE_MODE_LABELS.always;
 		case 'daily':
@@ -209,6 +212,14 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		});
 
 		this.addCommand({
+			id: 'spoonie-delete-activity-today',
+			name: 'Delete an activity for today',
+			callback: () => {
+				this.openDeleteActivityPicker(this.getTodayDateKey());
+			},
+		});
+
+		this.addCommand({
 			id: 'spoonie-edit-item',
 			name: 'Edit task/habit',
 			callback: () => {
@@ -221,6 +232,14 @@ export default class SpoonieLrpgPlugin extends Plugin {
 			name: 'Archive task/habit',
 			callback: () => {
 				this.openArchiveItemPicker();
+			},
+		});
+
+		this.addCommand({
+			id: 'spoonie-delete-item',
+			name: 'Delete task/habit',
+			callback: () => {
+				this.openDeleteItemPicker();
 			},
 		});
 
@@ -472,6 +491,7 @@ export default class SpoonieLrpgPlugin extends Plugin {
 	): RecurrenceRule {
 		const rawMode = rule?.mode;
 		const mode: RecurrenceMode =
+			rawMode === 'none' ||
 			rawMode === 'always' ||
 			rawMode === 'daily' ||
 			rawMode === 'weekly' ||
@@ -493,6 +513,10 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		const intervalDays = Math.max(1, Math.round(rule?.intervalDays ?? 1));
 		const dayOfMonth = Math.max(1, Math.min(31, Math.round(rule?.dayOfMonth ?? 1)));
 
+		if (mode === 'none') {
+			return { mode, startDate };
+		}
+
 		if (mode === 'weekly') {
 			return { mode, startDate, weekdays: weekdays && weekdays.length > 0 ? weekdays : [1] };
 		}
@@ -507,6 +531,12 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		}
 
 		return { mode: 'always', startDate };
+	}
+
+	private hasItemBeenCompleted(itemId: string): boolean {
+		return Object.values(this.settings.daily).some((day) =>
+			day.completedItemIds.includes(itemId),
+		);
 	}
 
 	private formatDateKeyFromDate(date: Date): string {
@@ -630,6 +660,18 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		}
 
 		switch (recurrence.mode) {
+			case 'none': {
+				const isDue = !this.hasItemBeenCompleted(item.id);
+				return {
+					isDue,
+					reason: isDue
+						? 'one-time item not completed yet'
+						: 'one-time item already completed',
+					recurrenceLabel,
+					startDate,
+					diffDays,
+				};
+			}
 			case 'always':
 				return { isDue: true, reason: 'always mode', recurrenceLabel, startDate, diffDays };
 			case 'daily':
@@ -800,6 +842,49 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		return existing;
 	}
 
+	async deleteItem(itemId: string): Promise<TrackableItem | null> {
+		const existing = this.settings.items[itemId];
+		if (!existing) {
+			return null;
+		}
+
+		for (const day of Object.values(this.settings.daily)) {
+			if (!day.completedItemIds.includes(itemId)) {
+				continue;
+			}
+
+			const xpToRemove =
+				day.completedItemXpById?.[itemId] ?? this.computeTaskXp(existing, day.availableSpoons);
+			const recoveredToRemove =
+				day.completedItemSpoonsRecoveredById?.[itemId] ??
+				Math.max(0, Math.round(existing.spoonRecovery ?? 0));
+
+			day.completedItemIds = day.completedItemIds.filter((id) => id !== itemId);
+			if (day.completedItemXpById) {
+				delete day.completedItemXpById[itemId];
+			}
+			if (day.completedItemSpoonsRecoveredById) {
+				delete day.completedItemSpoonsRecoveredById[itemId];
+			}
+			if (recoveredToRemove > 0) {
+				day.availableSpoons = Math.max(0, day.availableSpoons - recoveredToRemove);
+			}
+			day.xpEarned = Math.max(0, day.xpEarned - xpToRemove);
+			day.updatedAt = new Date().toISOString();
+			this.settings.profile.totalXp = Math.max(
+				0,
+				this.settings.profile.totalXp - xpToRemove,
+			);
+		}
+
+		delete this.settings.items[itemId];
+		this.applyLevelFromTotalXp();
+		await this.saveSettings();
+		this.refreshStatusBar();
+		this.refreshOpenDashboardViews();
+		return existing;
+	}
+
 	getTodayDateKey(): string {
 		return this.formatDateKeyFromDate(new Date());
 	}
@@ -846,13 +931,17 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		return draft.isRestorative ? amount : -amount;
 	}
 
+	private getActivityXpAward(spoonDelta: number): number {
+		return Math.abs(spoonDelta) * 3;
+	}
+
 	async addActivityForDate(
 		date: string,
 		draft: ActivityDraft,
 	): Promise<DailyActivity> {
 		const day = this.getOrCreateDailyRecord(date);
 		const spoonDelta = this.getActivitySpoonDelta(draft);
-		const xpAwarded = Math.abs(spoonDelta) * 3;
+		const xpAwarded = this.getActivityXpAward(spoonDelta);
 		const nowIso = new Date().toISOString();
 		const activity: DailyActivity = {
 			id: this.createActivityId(),
@@ -871,6 +960,64 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		this.refreshStatusBar();
 		this.refreshOpenDashboardViews();
 		return activity;
+	}
+
+	async updateActivityForDate(
+		date: string,
+		activityId: string,
+		draft: ActivityDraft,
+	): Promise<DailyActivity | null> {
+		const day = this.getOrCreateDailyRecord(date);
+		const existing = day.activities.find((activity) => activity.id === activityId);
+		if (!existing) {
+			return null;
+		}
+
+		const nextSpoonDelta = this.getActivitySpoonDelta(draft);
+		const spoonDeltaChange = nextSpoonDelta - existing.spoonDelta;
+		const xpChange =
+			this.getActivityXpAward(nextSpoonDelta) -
+			this.getActivityXpAward(existing.spoonDelta);
+
+		existing.title = draft.title.trim();
+		existing.spoonDelta = nextSpoonDelta;
+		day.availableSpoons += spoonDeltaChange;
+		day.xpEarned = Math.max(0, day.xpEarned + xpChange);
+		day.updatedAt = new Date().toISOString();
+		this.settings.profile.totalXp = Math.max(0, this.settings.profile.totalXp + xpChange);
+		this.applyLevelFromTotalXp();
+		await this.saveSettings();
+		this.refreshStatusBar();
+		this.refreshOpenDashboardViews();
+		return existing;
+	}
+
+	async deleteActivityForDate(
+		date: string,
+		activityId: string,
+	): Promise<DailyActivity | null> {
+		const day = this.getOrCreateDailyRecord(date);
+		const activityIndex = day.activities.findIndex((activity) => activity.id === activityId);
+		if (activityIndex === -1) {
+			return null;
+		}
+
+		const [removed] = day.activities.splice(activityIndex, 1);
+		if (!removed) {
+			return null;
+		}
+		day.availableSpoons -= removed.spoonDelta;
+		day.xpEarned = Math.max(0, day.xpEarned - this.getActivityXpAward(removed.spoonDelta));
+		day.updatedAt = new Date().toISOString();
+		this.settings.profile.totalXp = Math.max(
+			0,
+			this.settings.profile.totalXp - this.getActivityXpAward(removed.spoonDelta),
+		);
+		this.applyLevelFromTotalXp();
+		await this.saveSettings();
+		this.refreshStatusBar();
+		this.refreshOpenDashboardViews();
+		return removed;
 	}
 
 	getActivityNetSpoonsForDate(date: string): number {
@@ -964,6 +1111,10 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		}
 		day.xpEarned += xpAwarded;
 		day.updatedAt = new Date().toISOString();
+		if (item.type === 'task' && item.recurrence?.mode === 'none') {
+			item.active = false;
+			item.archivedAt = new Date().toISOString();
+		}
 		this.settings.profile.totalXp += xpAwarded;
 		this.applyLevelFromTotalXp();
 		await this.saveSettings();
@@ -1006,6 +1157,10 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		}
 		day.xpEarned = Math.max(0, day.xpEarned - xpToRemove);
 		day.updatedAt = new Date().toISOString();
+		if (item.type === 'task' && item.recurrence?.mode === 'none') {
+			item.active = true;
+			item.archivedAt = undefined;
+		}
 		this.settings.profile.totalXp = Math.max(
 			0,
 			this.settings.profile.totalXp - xpToRemove,
@@ -1421,6 +1576,14 @@ export default class SpoonieLrpgPlugin extends Plugin {
 				notes: item.notes,
 				tags: item.tags,
 			},
+			onDelete: async () => {
+				const deleted = await this.deleteItem(item.id);
+				if (!deleted) {
+					new Notice('Item no longer exists.');
+					return;
+				}
+				new Notice(`Deleted item: ${deleted.title}`);
+			},
 			onSubmit: async (draft) => {
 				const updated = await this.updateItem(item.id, draft);
 				if (!updated) {
@@ -1461,6 +1624,28 @@ export default class SpoonieLrpgPlugin extends Plugin {
 					return;
 				}
 				new Notice(`Archived item: ${archived.title}`);
+			},
+		).open();
+	}
+
+	private openDeleteItemPicker(): void {
+		const items = this.getAllItems();
+		if (items.length === 0) {
+			new Notice('No items to delete.');
+			return;
+		}
+
+		new ItemPickerModal(
+			this.app,
+			items,
+			'Select item to delete permanently',
+			async (item) => {
+				const deleted = await this.deleteItem(item.id);
+				if (!deleted) {
+					new Notice('Item no longer exists.');
+					return;
+				}
+				new Notice(`Deleted item: ${deleted.title}`);
 			},
 		).open();
 	}
@@ -1645,6 +1830,8 @@ export default class SpoonieLrpgPlugin extends Plugin {
 	private openAddActivityModalForDate(date: string): void {
 		new ActivityFormModal(this.app, {
 			targetDate: date,
+			title: `Log activity (${date})`,
+			submitLabel: 'Log activity',
 			onSubmit: async (draft) => {
 				const activity = await this.addActivityForDate(date, draft);
 				const sign = activity.spoonDelta >= 0 ? '+' : '';
@@ -1655,8 +1842,74 @@ export default class SpoonieLrpgPlugin extends Plugin {
 		}).open();
 	}
 
+	private openEditActivityModalForDate(date: string, activity: DailyActivity): void {
+		new ActivityFormModal(this.app, {
+			targetDate: date,
+			title: `Edit activity (${date})`,
+			submitLabel: 'Save activity',
+			initial: {
+				title: activity.title,
+				spoons: Math.abs(activity.spoonDelta),
+				isRestorative: activity.spoonDelta >= 0,
+			},
+			onDelete: async () => {
+				const deleted = await this.deleteActivityForDate(date, activity.id);
+				if (!deleted) {
+					new Notice('Activity no longer exists.');
+					return;
+				}
+				new Notice(`Deleted activity: ${deleted.title}.`);
+			},
+			onSubmit: async (draft) => {
+				const updated = await this.updateActivityForDate(date, activity.id, draft);
+				if (!updated) {
+					new Notice('Activity no longer exists.');
+					return;
+				}
+				const sign = updated.spoonDelta >= 0 ? '+' : '';
+				new Notice(
+					`Updated activity for ${date}: ${updated.title} (${sign}${updated.spoonDelta} spoons).`,
+				);
+			},
+		}).open();
+	}
+
 	openAddActivityFromDashboardDate(date: string): void {
 		this.openAddActivityModalForDate(date);
+	}
+
+	openEditActivityFromDashboardDate(date: string, activityId: string): void {
+		const day = this.settings.daily[date];
+		const activity = day?.activities.find((candidate) => candidate.id === activityId);
+		if (!activity) {
+			new Notice('Activity no longer exists.');
+			return;
+		}
+
+		this.openEditActivityModalForDate(date, activity);
+	}
+
+	private openDeleteActivityPicker(date: string): void {
+		const day = this.settings.daily[date];
+		const activities = day?.activities ?? [];
+		if (activities.length === 0) {
+			new Notice(`No activities to delete for ${date}.`);
+			return;
+		}
+
+		new ActivityPickerModal(
+			this.app,
+			activities,
+			`Select activity to delete for ${date}`,
+			async (activity) => {
+				const deleted = await this.deleteActivityForDate(date, activity.id);
+				if (!deleted) {
+					new Notice('Activity no longer exists.');
+					return;
+				}
+				new Notice(`Deleted activity: ${deleted.title}.`);
+			},
+		).open();
 	}
 
 	private showDayCloseResult(result: DayCloseResult): void {
@@ -2563,10 +2816,42 @@ class ItemPickerModal extends FuzzySuggestModal<TrackableItem> {
 	}
 }
 
+class ActivityPickerModal extends FuzzySuggestModal<DailyActivity> {
+	private readonly activities: DailyActivity[];
+	private readonly onPick: (activity: DailyActivity) => void | Promise<void>;
+
+	constructor(
+		app: App,
+		activities: DailyActivity[],
+		placeholder: string,
+		onPick: (activity: DailyActivity) => void | Promise<void>,
+	) {
+		super(app);
+		this.activities = activities;
+		this.onPick = onPick;
+		this.setPlaceholder(placeholder);
+	}
+
+	getItems(): DailyActivity[] {
+		return this.activities;
+	}
+
+	getItemText(activity: DailyActivity): string {
+		const sign = activity.spoonDelta >= 0 ? '+' : '';
+		return `${activity.title} (${sign}${activity.spoonDelta} spoons)`;
+	}
+
+	onChooseItem(activity: DailyActivity): void {
+		void this.onPick(activity);
+	}
+}
+
 class ItemFormModal extends Modal {
 	private readonly titleText: string;
 	private readonly submitLabel: string;
 	private readonly onSubmit: (draft: ItemDraft) => Promise<void>;
+	private readonly onDelete?: () => Promise<void>;
+	private readonly hasInitialRecurrence: boolean;
 	private draft: ItemDraft;
 
 	constructor(
@@ -2575,6 +2860,7 @@ class ItemFormModal extends Modal {
 			title: string;
 			submitLabel: string;
 			onSubmit: (draft: ItemDraft) => Promise<void>;
+			onDelete?: () => Promise<void>;
 			initial?: Partial<ItemDraft>;
 		},
 	) {
@@ -2582,6 +2868,8 @@ class ItemFormModal extends Modal {
 		this.titleText = options.title;
 		this.submitLabel = options.submitLabel;
 		this.onSubmit = options.onSubmit;
+		this.onDelete = options.onDelete;
+		this.hasInitialRecurrence = Boolean(options.initial?.recurrence);
 		const initialRecurrence = options.initial?.recurrence
 			? {
 					mode: options.initial.recurrence.mode,
@@ -2592,7 +2880,7 @@ class ItemFormModal extends Modal {
 					intervalDays: options.initial.recurrence.intervalDays,
 					dayOfMonth: options.initial.recurrence.dayOfMonth,
 			  }
-			: { mode: 'always' as RecurrenceMode };
+			: { mode: 'none' as RecurrenceMode };
 		this.draft = {
 			title: options.initial?.title ?? '',
 			type: options.initial?.type ?? 'task',
@@ -2632,7 +2920,14 @@ class ItemFormModal extends Modal {
 					.setValue(this.draft.type)
 					.onChange((value) => {
 						if (value === 'task' || value === 'habit') {
+							const previousType = this.draft.type;
 							this.draft.type = value;
+							if (!this.hasInitialRecurrence && previousType !== value) {
+								this.draft.recurrence = value === 'task'
+									? { mode: 'none' }
+									: { mode: 'always' };
+								refreshRecurrenceControls();
+							}
 						}
 					});
 			});
@@ -2702,6 +2997,7 @@ class ItemFormModal extends Modal {
 			.setDesc('Choose how often this item should be due.')
 			.addDropdown((dropdown) => {
 				dropdown
+					.addOption('none', 'No recurrence')
 					.addOption('always', 'Any day (manual cadence)')
 					.addOption('daily', 'Every day')
 					.addOption('weekly', 'Specific weekdays')
@@ -2710,6 +3006,7 @@ class ItemFormModal extends Modal {
 					.setValue(this.draft.recurrence.mode)
 					.onChange((value) => {
 						if (
+							value === 'none' ||
 							value === 'always' ||
 							value === 'daily' ||
 							value === 'weekly' ||
@@ -2867,6 +3164,19 @@ class ItemFormModal extends Modal {
 					this.draft.title = trimmedTitle;
 					await this.onSubmit(this.draft);
 					this.close();
+				});
+			})
+			.addExtraButton((button) => {
+				if (!this.onDelete) {
+					button.extraSettingsEl.hide();
+					return;
+				}
+
+				button.setIcon('trash').setTooltip('Delete item').onClick(() => {
+					void (async () => {
+						await this.onDelete?.();
+						this.close();
+					})();
 				});
 			})
 			.addButton((button) => {
@@ -3113,30 +3423,40 @@ class JournalBlockInsertModal extends Modal {
 
 class ActivityFormModal extends Modal {
 	private readonly targetDate: string;
+	private readonly titleText: string;
+	private readonly submitLabel: string;
 	private readonly onSubmit: (draft: ActivityDraft) => Promise<void>;
+	private readonly onDelete?: () => Promise<void>;
 	private draft: ActivityDraft;
 
 	constructor(
 		app: App,
 		options: {
 			targetDate: string;
+			title: string;
+			submitLabel: string;
 			onSubmit: (draft: ActivityDraft) => Promise<void>;
+			onDelete?: () => Promise<void>;
+			initial?: Partial<ActivityDraft>;
 		},
 	) {
 		super(app);
 		this.targetDate = options.targetDate;
+		this.titleText = options.title;
+		this.submitLabel = options.submitLabel;
 		this.onSubmit = options.onSubmit;
+		this.onDelete = options.onDelete;
 		this.draft = {
-			title: '',
-			spoons: 1,
-			isRestorative: false,
+			title: options.initial?.title ?? '',
+			spoons: options.initial?.spoons ?? 1,
+			isRestorative: options.initial?.isRestorative ?? false,
 		};
 	}
 
 	onOpen(): void {
 		const { contentEl } = this;
 		contentEl.empty();
-		contentEl.createEl('h2', { text: `Log activity (${this.targetDate})` });
+		contentEl.createEl('h2', { text: this.titleText });
 
 		new Setting(contentEl)
 			.setName('Activity title')
@@ -3176,7 +3496,7 @@ class ActivityFormModal extends Modal {
 
 		new Setting(contentEl)
 			.addButton((button) => {
-				button.setButtonText('Log Activity').setCta().onClick(async () => {
+				button.setButtonText(this.submitLabel).setCta().onClick(async () => {
 					const title = this.draft.title.trim();
 					if (!title) {
 						new Notice('Activity title is required.');
@@ -3190,6 +3510,19 @@ class ActivityFormModal extends Modal {
 					this.draft.title = title;
 					await this.onSubmit(this.draft);
 					this.close();
+				});
+			})
+			.addExtraButton((button) => {
+				if (!this.onDelete) {
+					button.extraSettingsEl.hide();
+					return;
+				}
+
+				button.setIcon('trash').setTooltip('Delete activity').onClick(() => {
+					void (async () => {
+						await this.onDelete?.();
+						this.close();
+					})();
 				});
 			})
 			.addButton((button) => {
@@ -3403,6 +3736,35 @@ function renderDashboardContent(
 	if (activities.length === 0) {
 		containerEl.createEl('p', { text: 'No activities logged for this day.' });
 	} else {
+		const attachActivityEditAction = (rowEl: HTMLElement, activity: DailyActivity): void => {
+			rowEl.addClass('spoonie-dashboard-editable-row');
+			rowEl.tabIndex = 0;
+			rowEl.setAttribute('role', 'button');
+			rowEl.setAttribute('aria-label', `Edit ${activity.title}`);
+
+			const openEdit = (): void => {
+				if (options.closeBeforeNavigation) {
+					options.onClose();
+				}
+				plugin.openEditActivityFromDashboardDate(dashboardDate, activity.id);
+			};
+
+			rowEl.addEventListener('click', (event) => {
+				const target = event.target;
+				if (target instanceof HTMLElement && target.closest('button')) {
+					return;
+				}
+				openEdit();
+			});
+
+			rowEl.addEventListener('keydown', (event) => {
+				if (event.key === 'Enter' || event.key === ' ') {
+					event.preventDefault();
+					openEdit();
+				}
+			});
+		};
+
 		const activityList = containerEl.createEl('ul', {
 			cls: 'spoonie-dashboard-due-list',
 		});
@@ -3410,6 +3772,7 @@ function renderDashboardContent(
 			const row = activityList.createEl('li', {
 				cls: 'spoonie-dashboard-due-row spoonie-dashboard-activity-row',
 			});
+			attachActivityEditAction(row, activity);
 			row.createEl('span', {
 				cls: 'spoonie-dashboard-due-title',
 				text: activity.title,
@@ -3444,6 +3807,18 @@ function renderDashboardContent(
 		if (options.closeBeforeNavigation) {
 			options.onClose();
 		}
+	};
+
+	const refreshDashboard = (): void => {
+		void (async () => {
+			await plugin.loadSettings();
+			const latestToday = plugin.getTodayDateKey();
+			if (dashboardDate === realToday) {
+				options.setDateKey(latestToday);
+			}
+			plugin.refreshStatusBar();
+			options.rerender();
+		})();
 	};
 
 	new Setting(actions)
@@ -3508,7 +3883,7 @@ function renderDashboardContent(
 			});
 		})
 		.addButton((button) => {
-			button.setButtonText('Refresh').onClick(() => options.rerender());
+			button.setButtonText('Refresh').onClick(() => refreshDashboard());
 		})
 		.addButton((button) => {
 			button.setButtonText(options.closeLabel).onClick(() => options.onClose());

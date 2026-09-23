@@ -6,6 +6,7 @@ export const CURRENT_SCHEMA_VERSION = 5;
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
 export type ItemType = 'habit' | 'task';
 export type RecurrenceMode =
+	| 'none'
 	| 'always'
 	| 'daily'
 	| 'weekly'
@@ -284,6 +285,7 @@ function normalizeRecurrenceRule(
 	}
 
 	const mode: RecurrenceMode =
+		value.mode === 'none' ||
 		value.mode === 'always' ||
 		value.mode === 'daily' ||
 		value.mode === 'weekly' ||
@@ -296,6 +298,10 @@ function normalizeRecurrenceRule(
 		typeof value.startDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.startDate)
 			? value.startDate
 			: fallbackStartDate;
+
+	if (mode === 'none') {
+		return { mode, startDate };
+	}
 
 	if (mode === 'weekly') {
 		const weekdays = Array.isArray(value.weekdays)
