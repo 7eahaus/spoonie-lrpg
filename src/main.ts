@@ -3881,13 +3881,16 @@ function renderDashboardContent(
 				);
 				options.rerender();
 			});
-		})
-		.addButton((button) => {
-			button.setButtonText('Refresh').onClick(() => refreshDashboard());
-		})
-		.addButton((button) => {
-			button.setButtonText(options.closeLabel).onClick(() => options.onClose());
 		});
+
+	const footerActions = actions.createDiv({ cls: 'spoonie-dashboard-footer-actions' });
+	const refreshButton = footerActions.createEl('button', { text: 'Refresh' });
+	refreshButton.type = 'button';
+	refreshButton.addEventListener('click', () => refreshDashboard());
+
+	const closeButton = footerActions.createEl('button', { text: options.closeLabel });
+	closeButton.type = 'button';
+	closeButton.addEventListener('click', () => options.onClose());
 }
 
 class DashboardModal extends Modal {

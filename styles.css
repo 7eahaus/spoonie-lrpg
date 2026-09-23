@@ -94,6 +94,14 @@ If your plugin does not need CSS, delete this file.
 	white-space: normal;
 }
 
+.spoonie-dashboard-footer-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	flex-wrap: wrap;
+	margin-top: 8px;
+}
+
 @media (max-width: 900px) {
 	.spoonie-dashboard-actions .setting-item-control {
 		grid-template-columns: repeat(2, minmax(0, 1fr));
